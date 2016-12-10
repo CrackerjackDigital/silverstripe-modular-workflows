@@ -1,5 +1,5 @@
 {
-	"name": "crackerjackdigital/silverstripe-modular-search",
+	"name": "crackerjackdigital/silverstripe-modular-workflows",
 	"type": "silverstripe-module",
 	"description": "Workflows and versioning of models for modular",
 	"homepage": "http://github.com/crackerjackdigital",
@@ -20,11 +20,10 @@
 	"require": {
 		"silverstripe/framework": ">=3.1",
 		"silverstripe/display-logic": "1.4.x",
-		"silverstripe-australia/gridfieldextensions": "1.x",
 		"crackerjackdigital/silverstripe-modular": "*"
 	},
 	"extra": {
-		"installer-name": "modular-search"
+		"installer-name": "modular-workflows"
 	},
 	"minimum-stability": "dev"
 }
