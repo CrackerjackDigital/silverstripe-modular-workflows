@@ -1,0 +1,9 @@
+en:
+  Modular\Relationships\VersionedHasTags:
+    Tags:
+      Label: 'Tags'
+      Guide: 'Free form tags'
+  Modular\GridList\VersionedHasGridListFilters:
+    GridListFilters:
+      Label: 'Associated filters'
+      Guide: 'Add filters here to keep the item shown when corresponding in-page filters is applied'
