@@ -74,7 +74,6 @@ class ModelExtension extends \Modular\ModelExtension {
 			$related = $this()->$relationshipName();
 			foreach ($related as $model) {
 				$extra = $related->getExtraData($relationshipName, $model->ID);
-				$related->
 			}
 		}
 	}
