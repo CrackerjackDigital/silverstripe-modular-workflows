@@ -74,23 +74,23 @@ class VersionedModel extends \DataObject {
 	}
 
 	/**
-	 * Notify related models that this model changed.
+	 * Notify related models that this model is changing in the database.
 	 */
 	public function onBeforeWrite() {
 		parent::onBeforeWrite();
+		$this->initBackprop();
 
-		if ($info = $this->shouldBackProp(__FUNCTION__)) {
-			if ($this->isChanged()) {
-				$this->backprop(__FUNCTION__, $info, $this);
-			}
+		if ($this->isChanged()) {
+			$this->backprop(__FUNCTION__);
 		}
 	}
 
+	/**
+	 * Notify related models that this model changed in the database.
+	 */
 	public function onAfterWrite() {
 		parent::onAfterWrite();
-		if ($info = $this->shouldBackProp(__FUNCTION__)) {
-			$this->backprop(__FUNCTION__, $info, $this);
-		}
+		$this->backprop(__FUNCTION__);
 	}
 
 }

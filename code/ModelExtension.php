@@ -1,5 +1,11 @@
 <?php
 namespace Modular\Workflows;
+
+use Modular\Collections\VersionedManyManyList;
+use Modular\Interfaces\VersionedRelationship;
+use Modular\reflection;
+use Modular\related;
+
 /**
  * Adds permissions checks and a mechanism to allow all related models of the extended models type to be
  * published when the 'owner' is published.
@@ -7,6 +13,9 @@ namespace Modular\Workflows;
  * @package Modular\Workflows
  */
 class ModelExtension extends \Modular\ModelExtension {
+	use related;
+	use reflection;
+
 	const AuthorGroup    = 'content-authors';
 	const PublisherGroup = 'content-publishers';
 
@@ -53,6 +62,21 @@ class ModelExtension extends \Modular\ModelExtension {
 
 	public function canDelete($member) {
 		return $this->canDoIt(self::ActionEdit, $member);
+	}
+
+	/**
+	 * Update all Versioned relationships which are in status 'Removed' to status 'Deleted' and set the version from the extended model's version.
+	 */
+	public function onAfterPublish() {
+		foreach ($this->extensionsByInterface(VersionedRelationship::class) as $extensionClassName => $extensionInstance ) {
+			$relationshipName = $extensionClassName::relationship_name();
+			/** @var VersionedManyManyList $related */
+			$related = $this()->$relationshipName();
+			foreach ($related as $model) {
+				$extra = $related->getExtraData($relationshipName, $model->ID);
+				$related->
+			}
+		}
 	}
 
 	/*

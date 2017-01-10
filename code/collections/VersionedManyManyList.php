@@ -1,15 +1,16 @@
 <?php
 namespace Modular\Collections;
 
-use DataObject;
 use DB;
 use InvalidArgumentException;
-use SQLDelete;
 
 class VersionedManyManyList extends \ManyManyList  {
+	const VersionedNumberFieldName = 'VersionedNumber';
 	const VersionedStatusFieldName = 'VersionedStatus';
 	const StatusCurrent = 'Current';
 	const StatusRemoved = 'Removed';
+	const StatusArchived = 'Archived';
+
 	/**
 	 * Add an item to this many_many relationship
 	 * Does so by adding an entry to the joinTable.
@@ -41,7 +42,9 @@ class VersionedManyManyList extends \ManyManyList  {
 	}
 
 	/**
-	 * Remove the given item from this list.
+	 * Update the given item in the list so that is flagged as 'Removed'. This will be checked by versioned_many_many trait exhibiting extensions
+	 * to ensure that 'Removed' items no longer get included in filter for display if in Stage mode. Records with 'Removed' status are then updated
+	 * to 'Deleted' when the model that owns the many_many relationship is published.
 	 *
 	 * Note that for a ManyManyList, the item is never actually deleted, only
 	 * the join table is affected
@@ -64,7 +67,9 @@ class VersionedManyManyList extends \ManyManyList  {
 		$query->addWhere(array("\"{$this->localKey}\"" => $itemID));
 
 		// now update the 'VersionedStatus' field to be 'Removed'
-		$query->setAssignments(array(VersionedManyManyList::VersionedStatusFieldName => VersionedManyManyList::StatusRemoved));
+		$query->setAssignments([
+			VersionedManyManyList::VersionedStatusFieldName => VersionedManyManyList::StatusRemoved,
+		]);
 		$query->execute();
 	}
 

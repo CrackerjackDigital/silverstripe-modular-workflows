@@ -38,6 +38,7 @@ trait versioned_many_many {
 		return [
 			static::relationship_name() => [
 				VersionedManyManyList::VersionedStatusFieldName => "Enum('" . VersionedManyManyList::StatusCurrent . "," . VersionedManyManyList::StatusRemoved . "')",
+			    VersionedManyManyList::VersionedNumberFieldName => 'Int'
 			]
 		];
 	}
