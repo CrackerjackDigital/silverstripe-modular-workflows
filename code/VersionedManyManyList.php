@@ -3,6 +3,8 @@ namespace Modular\Collections;
 
 use DataObject;
 use DB;
+use InvalidArgumentException;
+use SQLDelete;
 
 class VersionedManyManyList extends \ManyManyList  {
 	const VersionedStatusFieldName = 'VersionedStatus';
@@ -21,27 +23,21 @@ class VersionedManyManyList extends \ManyManyList  {
 	}
 
 	public function foreignIDFilter($id = null) {
-		if ($filter = parent::foreignIDFilter($id)) {
-			$active = [self::StatusCurrent, null];
+		if (\Versioned::current_stage() == 'Stage') {
 
-			$filter = [
-				[ 'VersionedStatus in (' . DB::placeholders($active) . ")" => $active ],
-			    $filter
-			];
+			$joinTable = $this->getJoinTable();
+			if ($filter = parent::foreignIDFilter($id)) {
+				// check that the VersionedStatus field exists on the join table.
+				if (array_key_exists(static::VersionedStatusFieldName, DB::field_list($joinTable))) {
+					// add VersionedStatus filter to include only 'Current' records
+					$filter = [
+						[static::VersionedStatusFieldName => self::StatusCurrent],
+						$filter
+					];
+				}
+			}
+			return $filter;
 		}
-		return $filter;
-	}
-
-	/**
-	 * Remove the given item from this list.
-	 *
-	 * Note that for a ManyManyList, the item is never actually deleted, only
-	 * the join table is affected.
-	 *
-	 * @param DataObject $item
-	 */
-	public function remove($item) {
-		return parent::remove($item);
 	}
 
 	/**
@@ -53,7 +49,23 @@ class VersionedManyManyList extends \ManyManyList  {
 	 * @param int $itemID The item ID
 	 */
 	public function removeByID($itemID) {
-		parent::removeByID($itemID);
+		if (!is_numeric($itemID)) {
+			throw new InvalidArgumentException("ManyManyList::removeById() expecting an ID");
+		}
+
+		$query = new \SQLUpdate("\"{$this->joinTable}\"");
+
+		if ($filter = $this->foreignIDWriteFilter($this->getForeignID())) {
+			$query->setWhere($filter);
+		} else {
+			user_error("Can't call ManyManyList::remove() until a foreign ID is set", E_USER_WARNING);
+		}
+
+		$query->addWhere(array("\"{$this->localKey}\"" => $itemID));
+
+		// now update the 'VersionedStatus' field to be 'Removed'
+		$query->setAssignments(array(VersionedManyManyList::VersionedStatusFieldName => VersionedManyManyList::StatusRemoved));
+		$query->execute();
 	}
 
 	/**

@@ -12,7 +12,7 @@ trait versioned_many_many {
 	/**
 	 * Add versioned fields defined in VersionedManyManyList to many_many_extraFields.
 	 *
-	 * If there is already an extraStatics on the class will need to be added in that classes code.
+	 * If there is already an extraStatics on the class will need to be added in that method due to trait inheritance/override.
 	 *
 	 * @param null $class
 	 * @param null $extension
