@@ -24,7 +24,7 @@ class VersionedModel extends \DataObject {
 	 */
 	private static $backprop_events = [
 		'onBeforeWrite' => true,
-		'onAfterWrite'  => true,
+		'changed'  => true,
 	];
 
 	private static $custom_list_class_name = 'Modular\Collections\VersionedDataList';
@@ -81,7 +81,7 @@ class VersionedModel extends \DataObject {
 		$this->initBackprop();
 
 		if ($this->isChanged()) {
-			$this->backprop(__FUNCTION__);
+			$this->backprop('change');
 		}
 	}
 
@@ -90,7 +90,7 @@ class VersionedModel extends \DataObject {
 	 */
 	public function onAfterWrite() {
 		parent::onAfterWrite();
-		$this->backprop(__FUNCTION__);
+		$this->backprop('change');
 	}
 
 }

@@ -4,12 +4,12 @@ namespace Modular\Collections;
 use DB;
 use InvalidArgumentException;
 
-class VersionedManyManyList extends \ManyManyList  {
+class VersionedManyManyList extends \ManyManyList {
 	const VersionedNumberFieldName = 'VersionedNumber';
 	const VersionedStatusFieldName = 'VersionedStatus';
-	const StatusCurrent = 'Current';
-	const StatusRemoved = 'Removed';
-	const StatusArchived = 'Archived';
+	const StatusCurrent            = 'Current';
+	const StatusRemoved            = 'Removed';
+	const StatusArchived           = 'Archived';
 
 	/**
 	 * Add an item to this many_many relationship
@@ -23,22 +23,28 @@ class VersionedManyManyList extends \ManyManyList  {
 		parent::add($item, $extraFields);
 	}
 
+	/**
+	 * If we're in Stage mode then filter out items which don't have a VersionedStatus of 'Current'.
+	 * @param null $id
+	 * @return array
+	 */
 	public function foreignIDFilter($id = null) {
+		$filter = parent::foreignIDFilter($id) ?: [];
+
 		if (\Versioned::current_stage() == 'Stage') {
 
 			$joinTable = $this->getJoinTable();
-			if ($filter = parent::foreignIDFilter($id)) {
-				// check that the VersionedStatus field exists on the join table.
-				if (array_key_exists(static::VersionedStatusFieldName, DB::field_list($joinTable))) {
-					// add VersionedStatus filter to include only 'Current' records
-					$filter = [
-						[static::VersionedStatusFieldName => self::StatusCurrent],
-						$filter
-					];
-				}
+
+			// check that the VersionedStatus field exists on the join table.
+			if (array_key_exists(static::VersionedStatusFieldName, DB::field_list($joinTable))) {
+				// add VersionedStatus filter to include only 'Current' records
+				$filter = array_filter([
+					[static::VersionedStatusFieldName => self::StatusCurrent],
+					$filter
+				]);
 			}
-			return $filter;
 		}
+		return $filter;
 	}
 
 	/**
