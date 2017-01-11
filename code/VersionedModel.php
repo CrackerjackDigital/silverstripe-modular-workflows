@@ -2,6 +2,9 @@
 namespace Modular;
 
 // only this needs importing as other traits are still in 'Modular\' namespace.
+use Modular\Collections\VersionedManyManyList;
+use Modular\Interfaces\Arities;
+use Modular\Interfaces\VersionedRelationship;
 use Modular\Traits\custom_get;
 use Modular\Traits\custom_many_many;
 
@@ -23,8 +26,8 @@ class VersionedModel extends \DataObject {
 	 * @var array
 	 */
 	private static $backprop_events = [
-		'onBeforeWrite' => true,
-		'changed'  => true,
+		'changing' => 'original',           // save original record data to info for event
+		'changed'  => true,                 // enable the event handler (this way can disable in config as can't otherwise remove)
 	];
 
 	private static $custom_list_class_name = 'Modular\Collections\VersionedDataList';
@@ -74,23 +77,32 @@ class VersionedModel extends \DataObject {
 	}
 
 	/**
-	 * Notify related models that this model is changing in the database.
+	 * Notify related models that this model is changing in the database via 'backprop' mechanism.
 	 */
 	public function onBeforeWrite() {
 		parent::onBeforeWrite();
 		$this->initBackprop();
 
 		if ($this->isChanged()) {
-			$this->backprop('change');
+			$this->backprop('changing');
 		}
+
 	}
 
 	/**
-	 * Notify related models that this model changed in the database.
+	 * Notify related models that this model changed in the database via 'backprop' mechanism.
 	 */
 	public function onAfterWrite() {
 		parent::onAfterWrite();
-		$this->backprop('change');
+		$this->backprop('changed');
+		// now we need to cleanup any temporary live records created while editing
+		/** @var VersionedManyManyList $relationship */
+		foreach ($this->relationships(Arities::ManyMany) as $relationship) {
+			if ($relationship instanceof VersionedRelationship) {
+				$relationship->updateLinkedVersions($this);
+			}
+		}
+
 	}
 
 }

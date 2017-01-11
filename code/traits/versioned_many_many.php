@@ -30,6 +30,7 @@ trait versioned_many_many {
 
 	/**
 	 * Returns an array of field definitions suitable for merging (recursively) into return from extraStatics call.
+	 *
 	 * @param null $class
 	 * @param null $extension
 	 * @return array
@@ -37,9 +38,10 @@ trait versioned_many_many {
 	public function versionedExtraFields($class = null, $extension = null) {
 		return [
 			static::relationship_name() => [
-				VersionedManyManyList::VersionedStatusFieldName => "Enum('" . VersionedManyManyList::StatusCurrent . "," . VersionedManyManyList::StatusRemoved . "')",
-			    VersionedManyManyList::VersionedNumberFieldName => 'Int'
-			]
+				VersionedManyManyList::VersionedStatusFieldName => "Enum('" . join(',', VersionedManyManyList::states()) . "')",
+				VersionedManyManyList::VersionedLinkFieldName   => 'Int',
+				VersionedManyManyList::VersionedNumberFieldName => 'Int',
+			],
 		];
 	}
 }
