@@ -81,7 +81,7 @@ class VersionedManyManyList extends \ManyManyList {
 					]
 				);
 				// now we need to publish the block without triggering publish handlers which would do a cleanup
-				$live->writeToStage('Live');
+				$live->doPublish('Live');
 			}
 			// add or update existing one to status 'Staged' so we can keep on editing it without impacting the live site
 			$extraData = array_merge(
@@ -126,9 +126,11 @@ class VersionedManyManyList extends \ManyManyList {
 	 * @return \SQLSelect
 	 */
 	protected function linkedVersions($itemOrID, $states) {
+		$itemID = ($itemOrID instanceof \DataObject) ? $itemOrID->ID : $itemOrID;
+
 		$query = new \SQLSelect("ID", "\"{$this->joinTable}\"");
 		$query->addWhere([
-			self::VersionedLinkFieldName => $itemOrID,
+			self::VersionedLinkFieldName => $itemID,
 		]);
 		if ($states) {
 			$query->addWhere($this->statesFilter($states));
