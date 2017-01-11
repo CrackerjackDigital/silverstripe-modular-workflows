@@ -97,7 +97,7 @@ class VersionedManyManyList extends \ManyManyList {
 	 *
 	 * Does so by adding an entry to the joinTable.
 	 *
-	 * @param \DataObject $item
+	 * @param \DataObject|\Versioned $item
 	 * @param array       $extraData   A map of additional columns to insert into the joinTable.
 	 *                                 Column names should be ANSI quoted.
 	 */
@@ -176,8 +176,83 @@ class VersionedManyManyList extends \ManyManyList {
 				],
 				$extraData
 			);
+
+			// unpublish the item being edited from Live
+			$item->deleteFromStage('Live');
+
 		}
 		parent::add($item, $extraData);
+	}
+
+	/**
+	 *
+	 *
+	 * Update the given item in the list so that is flagged as 'Archived'. This will be checked by versioned_many_many trait exhibiting extensions
+	 * to ensure that 'Archived' items no longer get included in filter for display if in Stage mode.
+	 *
+	 * Note that for a ManyManyList, the item is never actually deleted, only
+	 * the join table is affected
+	 *
+	 * @param int $itemID The item ID
+	 */
+	public function removeByID($itemID) {
+		if (!is_numeric($itemID)) {
+			throw new InvalidArgumentException("ManyManyList::removeById() expecting an ID");
+		}
+
+		/** @var \DataObject|\Versioned $item */
+		if ($item = \DataObject::get($this->dataClass)->byID($itemID)) {
+			// if we are removing a record which a LiveCopy we need to restore the data from the LiveCopy to the 'Editing' record.
+			$linkedQuery = $this->linkedVersions($itemID, self::StatusLiveCopy);
+
+			// try and get a relationship for the Live Copy of the record
+			if ($linkedRow = $linkedQuery->firstRow()->execute()->record()) {
+
+				if ($linkedID = $linkedRow[ $this->localKey ]) {
+
+					/** @var \DataObject|\Versioned $linkedModel */
+					if ($linkedModel = \DataObject::get($this->dataClass)->byID($linkedID)) {
+
+						$liveData = $linkedModel->toMap();
+
+						// we have the live copy now, copy back the data to the existing item
+						$item->update($liveData);
+
+						// save old data to model
+						$item->write();
+
+						// write item model to stage
+						$item->writeToStage('Stage');
+
+						// publish the item again with the 'old' details
+						$item->writeToStage('Live');
+
+						// delete the LiveCopy as we are done with it
+						$linkedModel->deleteFromStage('Live');
+
+					}
+				}
+				$deleter = $linkedQuery->toDelete();
+				$deleter->execute();
+
+				// update the relationship to the edited item to 'Published' so is visible on Stage and Live again
+				$extraData = [
+					VersionedManyManyList::VersionedStatusFieldName => VersionedManyManyList::StatusPublished,
+				];
+				$this->updateItemExtraData($itemID, $extraData);
+
+			} else {
+				// no copies etc, just on stage so delete it if we were the creator
+				if ($data = $this->findRelationship($itemID, self::StatusStaged)) {
+					if (isset($data[ self::VersionedMemberFieldName ]) && $data[ self::VersionedMemberFieldName ] == \Member::currentUserID()) {
+						$item->delete();
+					}
+				}
+
+				// tidy up the relationship we don't want it anymore
+				parent::removeByID($itemID);
+			}
+		}
 	}
 
 	/**
@@ -276,77 +351,6 @@ class VersionedManyManyList extends \ManyManyList {
 		return [
 			static::VersionedStatusFieldName . ' in (' . DB::placeholders($states) . ')' => $states,
 		];
-	}
-
-	/**
-	 *
-	 *
-	 * Update the given item in the list so that is flagged as 'Archived'. This will be checked by versioned_many_many trait exhibiting extensions
-	 * to ensure that 'Archived' items no longer get included in filter for display if in Stage mode.
-	 *
-	 * Note that for a ManyManyList, the item is never actually deleted, only
-	 * the join table is affected
-	 *
-	 * @param int $itemID The item ID
-	 */
-	public function removeByID($itemID) {
-		if (!is_numeric($itemID)) {
-			throw new InvalidArgumentException("ManyManyList::removeById() expecting an ID");
-		}
-
-		/** @var \DataObject|\Versioned $item */
-		if ($item = \DataObject::get($this->dataClass)->byID($itemID)) {
-			// if we are removing a record which a LiveCopy we need to restore the data from the LiveCopy to the 'Editing' record.
-			$linkedQuery = $this->linkedVersions($itemID, self::StatusLiveCopy);
-
-			// try and get a relationship for the Live Copy of the record
-			if ($linkedRow = $linkedQuery->firstRow()->execute()->record()) {
-
-				if ($linkedID = $linkedRow[ $this->localKey ]) {
-
-					/** @var \DataObject|\Versioned $linkedModel */
-					if ($linkedModel = \DataObject::get($this->dataClass)->byID($linkedID)) {
-
-						$liveData = $linkedModel->toMap();
-
-						// we have the live copy now, copy back the data to the existing item
-						$item->update($liveData);
-
-						// save old data to model
-						$item->write();
-
-						// write item model to stage
-						$item->writeToStage('Stage');
-
-						// publish the item again with the 'old' details
-						$item->writeToStage('Live');
-
-						// delete the LiveCopy as we are done with it
-						$linkedModel->deleteFromStage('Live');
-
-					}
-				}
-				$deleter = $linkedQuery->toDelete();
-				$deleter->execute();
-
-				// update the relationship to the edited item to 'Published' so is visible on Stage and Live again
-				$extraData = [
-					VersionedManyManyList::VersionedStatusFieldName => VersionedManyManyList::StatusPublished,
-				];
-				$this->updateItemExtraData($itemID, $extraData);
-
-			} else {
-				// no copies etc, just on stage so delete it if we were the creator
-				if ($data = $this->findRelationship($itemID, self::StatusStaged)) {
-					if (isset($data[ self::VersionedMemberFieldName ]) && $data[ self::VersionedMemberFieldName ] == \Member::currentUserID()) {
-						$item->delete();
-					}
-				}
-
-				// tidy up the relationship we don't want it anymore
-				parent::removeByID($itemID);
-			}
-		}
 	}
 
 	/**
