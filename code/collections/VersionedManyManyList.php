@@ -47,6 +47,50 @@ class VersionedManyManyList extends \ManyManyList {
 	}
 
 	/**
+	 * This is used to build the filter criteria for this list, we modify default behaviour so
+	 * if we're in Stage mode then filter out items which don't have a VersionedStatus of 'Current'.
+	 *
+	 * @param int|null          $id
+	 * @param string|array|null $states check for this status
+	 * @return array
+	 */
+	public function foreignIDFilter($id = null, $states = []) {
+		$filter = parent::foreignIDFilter($id);
+
+		$joinTable = $this->getJoinTable();
+
+		// check that the VersionedStatus field exists on the join table.
+		if (array_key_exists(static::VersionedStatusFieldName, DB::field_list($joinTable))) {
+			$currentStage = \Versioned::current_stage();
+
+			if ($states) {
+				// use provided states for building filter
+				$states = is_array($states) ? $states : [$states];
+			} else {
+				// leave only states in map which have current stage as an option
+				// no stage will come out as 'NoSuchStage' and so fail the filter as expected.
+				$states = array_keys(
+					array_filter(
+						self::state_stage_map(),
+						function ($stages) use ($currentStage) {
+							return in_array($currentStage, $stages);
+						}
+					)
+				);
+
+			}
+
+			// add VersionedStatus filter to include only records allowed for current stage
+			// filtering out any empty components
+			$filter = array_filter([
+				$this->statesFilter($states),
+				$filter ?: [],
+			]);
+		}
+		return $filter;
+	}
+
+	/**
 	 * For VersionedModels creates a copy of the item with values from before it was updated and publishes this to live along with a relationship
 	 * in this list's table with a 'Live' status. This copy will be visible on the Live site. The relationship to the item being added (if new)
 	 * or updated (if existing) is then updated to 'Editing' status and so will be filtered out of Live mode but visible in Stage, so in the CMS.
@@ -72,29 +116,29 @@ class VersionedManyManyList extends \ManyManyList {
 				// get the 'old' values from before updates to the model where applied
 				$savedValues = @$item->backpropData('changing')['original'] ?: [];
 
-				// create a copy of the published item and save it
+				unset($savedValues['ID']);
+				unset($savedValues['ClassName']);
+				// remove unset($savedValues[$this->localKey]);
+
+				// create a copy of the published item and its relationships
 				/** @var \DataObject|\Versioned|backprop $live */
 				$live = $item->duplicate(true);
 
-				unset($savedValues['ID']);
-				unset($savedValues['ClassName']);
-
-				// update live model with 'old' values
 				$live->update($savedValues);
 
 				// write with old values
 				$live->write();
 
-				// put the live one on stage
+				// put on stage so can find & manipulate easier
 				$live->writeToStage('Stage');
 
-				// put live on live
+				// put on Live
 				$live->writeToStage('Live');
 
-				// setup the relationship for the new 'live' record and backlink to the 'real' record
+				// setup the relationship for the new 'live' record and backlink to the 'real' record, set member ID on it
 				$liveExtraData = [
-					self::VersionedStatusFieldName => self::StatusLiveCopy,  // only show copy on live
-					self::VersionedLinkFieldName   => $item->ID,
+					self::VersionedStatusFieldName => self::StatusLiveCopy,         // only show copy on live
+					self::VersionedLinkFieldName   => $item->ID,                    // link back to original item
 					self::VersionedMemberFieldName => \Member::currentUserID(),
 				];
 
@@ -110,6 +154,7 @@ class VersionedManyManyList extends \ManyManyList {
 						unset($liveExtraData['ID']);
 					}
 				}
+				// add should set this but here we go
 				$liveExtraData[$this->localKey] = $live->ID;
 
 				// add a new relationship to the 'live' record with a backlink to the 'real' item which is being edited
@@ -118,13 +163,15 @@ class VersionedManyManyList extends \ManyManyList {
 					$live,
 					$liveExtraData
 				);
+
+				// finished creating live copy
 			}
 
 			// add or update existing one to status 'Staged' so we can keep on editing it without impacting the live site,
 			// also update the VersionedMemberID to current member ID.
 			$extraData = array_merge(
 				[
-					self::VersionedStatusFieldName => self::StatusStaged,
+					self::VersionedStatusFieldName => self::DefaultStatus,
 					self::VersionedMemberFieldName => \Member::currentUserID(),
 				],
 				$extraData
@@ -157,21 +204,6 @@ class VersionedManyManyList extends \ManyManyList {
 		}
 
 		// return the versions we updated
-		return $linkedVersions;
-
-		$query = new \SQLUpdate("\"{$this->joinTable}\"");
-		$query->addWhere([
-			self::VersionedLinkFieldName => $itemID,
-		]);
-		if ($ifInStates) {
-			$query->addWhere($this->statesFilter($ifInStates));
-		}
-		$query->addAssignments([
-			self::VersionedStatusFieldName => $toState,
-		]);
-		$sql = $query->sql();
-		$query->execute();
-
 		return $linkedVersions;
 	}
 
@@ -232,48 +264,6 @@ class VersionedManyManyList extends \ManyManyList {
 		return $query;
 	}
 
-	/**
-	 * If we're in Stage mode then filter out items which don't have a VersionedStatus of 'Current'.
-	 *
-	 * @param int|null          $id
-	 * @param string|array|null $states check for this status
-	 * @return array
-	 */
-	public function foreignIDFilter($id = null, $states = []) {
-		$filter = parent::foreignIDFilter($id);
-
-		$joinTable = $this->getJoinTable();
-
-		// check that the VersionedStatus field exists on the join table.
-		if (array_key_exists(static::VersionedStatusFieldName, DB::field_list($joinTable))) {
-			$currentStage = \Versioned::current_stage();
-
-			if ($states) {
-				// use provided states for building filter
-				$states = is_array($states) ? $states : [$states];
-			} else {
-				// leave only states in map which have current stage as an option
-				// no stage will come out as 'NoSuchStage' and so fail the filter as expected.
-				$states = array_keys(
-					array_filter(
-						self::state_stage_map(),
-						function ($stages) use ($currentStage) {
-							return in_array($currentStage, $stages);
-						}
-					)
-				);
-
-			}
-
-			// add VersionedStatus filter to include only records allowed for current stage
-			// filtering out any empty components
-			$filter = array_filter([
-				$this->statesFilter($states),
-				$filter ?: [],
-			]);
-		}
-		return $filter;
-	}
 
 	/**
 	 * Return a parameterised filter for selecting by states,
@@ -316,8 +306,11 @@ class VersionedManyManyList extends \ManyManyList {
 
 					/** @var \DataObject|\Versioned $linkedModel */
 					if ($linkedModel = \DataObject::get($this->dataClass)->byID($linkedID)) {
+
+						$liveData = $linkedModel->toMap();
+
 						// we have the live copy now, copy back the data to the existing item
-						$item->update($linkedModel->toMap());
+						$item->update($liveData);
 
 						// save old data to model
 						$item->write();
@@ -325,7 +318,7 @@ class VersionedManyManyList extends \ManyManyList {
 						// write item model to stage
 						$item->writeToStage('Stage');
 
-						// publish the item again with the old details
+						// publish the item again with the 'old' details
 						$item->writeToStage('Live');
 
 						// delete the LiveCopy as we are done with it

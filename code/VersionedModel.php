@@ -112,15 +112,7 @@ class VersionedModel extends \DataObject {
 		if ($this->backpropData('changing')) {
 			$this->backprop('changed');
 		}
-
-		// cleanup any temporary live records created while editing by marking them as 'Archived'
-		/** @var VersionedManyManyList $relationship */
-		foreach ($this->relationships(Arities::ManyMany) as $relationship) {
-			if ($relationship instanceof VersionedRelationship) {
-				$relationship->updateLinkedVersions($this, VersionedManyManyList::StatusArchived);
-			}
-		}
-
 	}
+
 
 }

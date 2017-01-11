@@ -2,6 +2,7 @@
 namespace Modular\Workflows;
 
 use Modular\Collections\VersionedManyManyList;
+use Modular\Interfaces\Arities;
 use Modular\Interfaces\VersionedRelationship;
 use Modular\reflection;
 use Modular\related;
@@ -64,16 +65,34 @@ class ModelExtension extends \Modular\ModelExtension {
 		return $this->canDoIt(self::ActionEdit, $member);
 	}
 
-	/**
-	 * Update all Versioned relationships which are in status 'Removed' to status 'Deleted' and set the version from the extended model's version.
-	 */
 	public function onAfterPublish() {
+		// cleanup any temporary live records created while editing by marking them as 'Archived'
+		/** @var VersionedManyManyList $relationship */
+		foreach ($this->relationships(Arities::ManyMany) as $relationship) {
+			if ($relationship instanceof VersionedRelationship) {
+				$relationship->updateLinkedVersions($this(), VersionedManyManyList::StatusArchived);
+			}
+		}
 		foreach ($this->extensionsByInterface(VersionedRelationship::class) as $extensionClassName => $extensionInstance ) {
 			$relationshipName = $extensionClassName::relationship_name();
-			/** @var VersionedManyManyList $related */
-			$related = $this()->$relationshipName();
-			foreach ($related as $model) {
-				$extra = $related->getExtraData($relationshipName, $model->ID);
+			/** @var VersionedManyManyList $list */
+			$list = $this()->$relationshipName();
+			foreach ($list as $model) {
+				if ($extra = $list->getExtraData($relationshipName, $model->ID)) {
+					// check for 'Editing' mode
+					if ($extra[VersionedManyManyList::VersionedStatusFieldName] == VersionedManyManyList::StatusStaged) {
+						// publish the item
+						$model->writeToStage('Live');
+
+						// 'publish' the relationship
+						$list->updateItemExtraData(
+							$model->ID,
+							[
+								VersionedManyManyList::VersionedStatusFieldName => VersionedManyManyList::StatusPublished
+							]
+						);
+					}
+				}
 			}
 		}
 	}
