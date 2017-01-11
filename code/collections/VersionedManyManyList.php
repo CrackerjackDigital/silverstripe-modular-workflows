@@ -4,6 +4,7 @@ namespace Modular\Collections;
 use DB;
 use InvalidArgumentException;
 use Modular\backprop;
+use Modular\GridField\GridFieldOrderableRows;
 use Modular\VersionedModel;
 use SQLQuery;
 use SS_Query;
@@ -12,18 +13,20 @@ class VersionedManyManyList extends \ManyManyList {
 	const VersionedNumberFieldName = 'VersionedNumber';
 	const VersionedStatusFieldName = 'VersionedStatus';
 	const VersionedLinkFieldName   = 'VersionedLinkID';
-	const StatusStaged             = 'Staged';          // Only on on Stage
-	const StatusPublished          = 'Published';       // On Stage and Live
-	const StatusRemoved            = 'Removed';         // Only on Live
-	const StatusArchived           = 'Archived';        // Neither Stage nor Live
+	const VersionedMemberFieldName = 'VersionedMemberID';           // who owns this relationship (created, updated)?
 
-	const DefaultStatus = self::StatusStaged;           // status to create relationships with
+	const StatusStaged    = 'Editing';             // Only on Stage
+	const StatusPublished = 'Published';           // On Stage and Live
+	const StatusLiveCopy  = 'Live';                // Only on Live
+	const StatusArchived  = 'Archived';            // Neither Stage nor Live
+
+	const DefaultStatus = self::StatusStaged;               // status to create relationships with
 
 	private static $state_stage_map = [
-		self::StatusPublished => ['Stage', 'Live'],
-		self::StatusStaged    => ['Stage'],
-		self::StatusRemoved   => ['Live'],
-		self::StatusArchived  => ['NoSuchStage'],           // will always be excluded
+		self::StatusPublished => ['Stage', 'Live'],         // standard record visible in CMS and Live (i.e. Published)
+		self::StatusStaged    => ['Stage'],                 // newly created or being edited
+		self::StatusLiveCopy  => ['Live'],                  // copy made to live while real record is being edited
+		self::StatusArchived  => ['Archived'],              // excluded from Stage & Live as there is no 'Archived' stage atm
 	];
 
 	/**
@@ -44,7 +47,10 @@ class VersionedManyManyList extends \ManyManyList {
 	}
 
 	/**
-	 * Add an item to this many_many relationship
+	 * For VersionedModels creates a copy of the item with values from before it was updated and publishes this to live along with a relationship
+	 * in this list's table with a 'Live' status. This copy will be visible on the Live site. The relationship to the item being added (if new)
+	 * or updated (if existing) is then updated to 'Editing' status and so will be filtered out of Live mode but visible in Stage, so in the CMS.
+	 *
 	 * Does so by adding an entry to the joinTable.
 	 *
 	 * @param \DataObject $item
@@ -52,41 +58,74 @@ class VersionedManyManyList extends \ManyManyList {
 	 *                                 Column names should be ANSI quoted.
 	 */
 	public function add($item, $extraData = array()) {
+		// deal with VersionedModel records
 		if ($item instanceof VersionedModel) {
-			// check for existing linked versioned with a 'Published' status as they are the copies being shown on live at the moment.
-			$linkedVersions = $this->linkedVersions($item, self::StatusPublished);
+			// check for existing linked versioned with a 'Published' status as if it exists we don't need to create a new one.
+			$hasLinkedVersions = $this->linkedVersions($item, self::StatusPublished)->count();
 
-			if ($linkedVersions->count() == 0) {
+			// check for an existing published version, this means we need to spin off a new one with those details if one does exist
+			$hasPublished = $this->hasExisting($item, self::StatusPublished);
 
-				// we need to create a copy of the published item one and save as 'Removed' so it only appears on the live site
+			// if no linked version exists but a published version exists we need to create a 'Live' copy.
+			if (!$hasLinkedVersions && $hasPublished) {
+
+				// get the 'old' values from before updates to the model where applied
+				$savedValues = @$item->backpropData('changing')['original'] ?: [];
+
+				// create a copy of the published item and save it
 				/** @var \DataObject|\Versioned|backprop $live */
-				$live = clone $item;
+				$live = $item->duplicate(true);
 
-				$oldValues = $item->backpropData('changing');
+				unset($savedValues['ID']);
+				unset($savedValues['ClassName']);
 
-				// set fields back to what they were before last write as tracked by 'backprop' handling.
-				$live->update($oldValues);
-				$live->ID = null;
-				$live->write(false, true, true);
+				// update live model with 'old' values
+				$live->update($savedValues);
 
-//			$relationshipID = $this->existingQuery($item, self::StatusPublished)->execute()->first()->ID;
+				// write with old values
+				$live->write();
 
-				// add (or update) the existing linked copy relationship with status of Published and link back to original item.
+				// put the live one on stage
+				$live->writeToStage('Stage');
+
+				// put live on live
+				$live->writeToStage('Live');
+
+				// setup the relationship for the new 'live' record and backlink to the 'real' record
+				$liveExtraData = [
+					self::VersionedStatusFieldName => self::StatusLiveCopy,  // only show copy on live
+					self::VersionedLinkFieldName   => $item->ID,
+					self::VersionedMemberFieldName => \Member::currentUserID(),
+				];
+
+				// copy data from the existing relationship, e.g. Sort fields etc
+				$existing = $this->existingQuery($item, self::StatusPublished);
+				if ($first = $existing->firstRow()) {
+					if ($record = $existing->execute()->record()) {
+						$liveExtraData = array_merge(
+							$record,
+							$liveExtraData
+						);
+						// unset the ID so add doesn't just update the existing one.
+						unset($liveExtraData['ID']);
+					}
+				}
+				$liveExtraData[$this->localKey] = $live->ID;
+
+				// add a new relationship to the 'live' record with a backlink to the 'real' item which is being edited
 				// this link will be used when the item is published to identify temporary live records and remove them.
-				$this->add(
+				parent::add(
 					$live,
-					[
-						self::VersionedStatusFieldName => self::StatusPublished,
-						self::VersionedLinkFieldName   => $item->ID,
-					]
+					$liveExtraData
 				);
-				// now we need to publish the block without triggering publish handlers which would do a cleanup
-				$live->doPublish('Live');
 			}
-			// add or update existing one to status 'Staged' so we can keep on editing it without impacting the live site
+
+			// add or update existing one to status 'Staged' so we can keep on editing it without impacting the live site,
+			// also update the VersionedMemberID to current member ID.
 			$extraData = array_merge(
 				[
 					self::VersionedStatusFieldName => self::StatusStaged,
+					self::VersionedMemberFieldName => \Member::currentUserID(),
 				],
 				$extraData
 			);
@@ -95,14 +134,30 @@ class VersionedManyManyList extends \ManyManyList {
 	}
 
 	/**
-	 * Update any linked versions to status 'Archived'
+	 * Update any linked versions for the provided item/ID. Generally used to remove an old version of a record from
+	 * the Live site when a new version is being published, e.g. in VersionedModel.onAfterWrite(). This won't unpublish the
+	 * linked version models though.
 	 *
 	 * @param \DataObject|int $itemOrID
-	 * @param string          $toState    new state to set
+	 * @param string          $toState    new state to set, e.g. 'Archived' to remove from live site
 	 * @param array|string    $ifInStates optional array of states to target for update
+	 * @return \SQLSelect the linked versions which were updated
 	 */
-	public function updateLinkedVersions($itemOrID, $toState = self::StatusArchived, $ifInStates = []) {
+	public function updateLinkedVersions($itemOrID, $toState, $ifInStates = []) {
 		$itemID = ($itemOrID instanceof \DataObject) ? $itemOrID->ID : $itemOrID;
+
+		$linkedVersions = $this->linkedVersions($itemID, $ifInStates);
+		if ($linkedVersions->count()) {
+			// convert to an update and set state on the selected records.
+			$update = $linkedVersions->toUpdate();
+			$update->addAssignments([
+				self::VersionedStatusFieldName => $toState,
+			]);
+			$update->execute();
+		}
+
+		// return the versions we updated
+		return $linkedVersions;
 
 		$query = new \SQLUpdate("\"{$this->joinTable}\"");
 		$query->addWhere([
@@ -116,26 +171,8 @@ class VersionedManyManyList extends \ManyManyList {
 		]);
 		$sql = $query->sql();
 		$query->execute();
-	}
 
-	/**
-	 * Return items in this list of relationships which have a 'link id' of the provided item ID and which are in the provided state.
-	 *
-	 * @param \DataObject|int $itemOrID
-	 * @param array|string    $states
-	 * @return \SQLSelect
-	 */
-	protected function linkedVersions($itemOrID, $states) {
-		$itemID = ($itemOrID instanceof \DataObject) ? $itemOrID->ID : $itemOrID;
-
-		$query = new \SQLSelect("ID", "\"{$this->joinTable}\"");
-		$query->addWhere([
-			self::VersionedLinkFieldName => $itemID,
-		]);
-		if ($states) {
-			$query->addWhere($this->statesFilter($states));
-		}
-		return $query;
+		return $linkedVersions;
 	}
 
 	/**
@@ -150,11 +187,32 @@ class VersionedManyManyList extends \ManyManyList {
 	}
 
 	/**
+	 * Return items in this list of relationships which have a 'link id' of the provided item ID and which are in the provided state.
+	 * Similair to existingQuery but uses the LinkedCopyID field to select the relationship instead of the item ID field (localKey)
+	 *
+	 * @param \DataObject|int $itemOrID
+	 * @param array|string    $states
+	 * @return \SQLSelect
+	 */
+	public function linkedVersions($itemOrID, $states) {
+		$itemID = ($itemOrID instanceof \DataObject) ? $itemOrID->ID : $itemOrID;
+
+		$query = new \SQLSelect("*", "\"{$this->joinTable}\"");
+		$query->addWhere([
+			self::VersionedLinkFieldName => $itemID,
+		]);
+		if ($states) {
+			$query->addWhere($this->statesFilter($states));
+		}
+		return $query;
+	}
+
+	/**
 	 * Check if this list already has the item.
 	 *
 	 * @param int|\DataObject $itemOrID
 	 * @param string|array    $states what states to check for existing relationship, e.g. self.StatusPublished, self.AnyStatus
-	 * @return SQLQuery
+	 * @return \SQLSelect
 	 */
 	protected function existingQuery($itemOrID, $states = []) {
 		$itemID = ($itemOrID instanceof \DataObject)
@@ -164,7 +222,7 @@ class VersionedManyManyList extends \ManyManyList {
 		// With the current query, simply add the foreign and local conditions
 		// The query can be a bit odd, especially if custom relation classes
 		// don't join expected tables (@see Member_GroupSet for example).
-		$query = new SQLQuery("ID", "\"{$this->joinTable}\"");
+		$query = new \SQLSelect("*", "\"{$this->joinTable}\"");
 		$query->addWhere(array(
 			"\"{$this->joinTable}\".\"{$this->localKey}\"" => $itemID,
 		));
@@ -218,10 +276,10 @@ class VersionedManyManyList extends \ManyManyList {
 	}
 
 	/**
-	 * Return a filter for selecting by states
+	 * Return a parameterised filter for selecting by states,
 	 *
 	 * @param $states
-	 * @return array
+	 * @return array e.g [ "VersionedStatus in (?, ?)" => [ 'LiveCopy', 'Published' ] ]
 	 */
 	protected function statesFilter($states) {
 		$states = is_array($states) ? $states : [$states];
@@ -231,9 +289,10 @@ class VersionedManyManyList extends \ManyManyList {
 	}
 
 	/**
-	 * Update the given item in the list so that is flagged as 'Removed'. This will be checked by versioned_many_many trait exhibiting extensions
-	 * to ensure that 'Removed' items no longer get included in filter for display if in Stage mode. Records with 'Removed' status are then updated
-	 * to 'Deleted' when the model that owns the many_many relationship is published.
+	 *
+	 *
+	 * Update the given item in the list so that is flagged as 'Archived'. This will be checked by versioned_many_many trait exhibiting extensions
+	 * to ensure that 'Archived' items no longer get included in filter for display if in Stage mode.
 	 *
 	 * Note that for a ManyManyList, the item is never actually deleted, only
 	 * the join table is affected
@@ -244,10 +303,68 @@ class VersionedManyManyList extends \ManyManyList {
 		if (!is_numeric($itemID)) {
 			throw new InvalidArgumentException("ManyManyList::removeById() expecting an ID");
 		}
-		$extraData = [
-			VersionedManyManyList::VersionedStatusFieldName => VersionedManyManyList::StatusRemoved,
-		];
-		$this->updateItemExtraData($itemID, $extraData);
+
+		/** @var \DataObject|\Versioned $item */
+		if ($item = \DataObject::get($this->dataClass)->byID($itemID)) {
+			// if we are removing a record which a LiveCopy we need to restore the data from the LiveCopy to the 'Editing' record.
+			$linkedQuery = $this->linkedVersions($itemID, self::StatusLiveCopy);
+
+			// try and get a relationship for the Live Copy of the record
+			if ($linkedRow = $linkedQuery->firstRow()->execute()->record()) {
+
+				if ($linkedID = $linkedRow[ $this->localKey ]) {
+
+					/** @var \DataObject|\Versioned $linkedModel */
+					if ($linkedModel = \DataObject::get($this->dataClass)->byID($linkedID)) {
+						// we have the live copy now, copy back the data to the existing item
+						$item->update($linkedModel->toMap());
+
+						// save old data to model
+						$item->write();
+
+						// write item model to stage
+						$item->writeToStage('Stage');
+
+						// publish the item again with the old details
+						$item->writeToStage('Live');
+
+						// delete the LiveCopy as we are done with it
+						$linkedModel->deleteFromStage('Live');
+
+					}
+				}
+				$deleter = $linkedQuery->toDelete();
+				$deleter->execute();
+
+				// update the relationship to the edited item to 'Published' so is visible on Stage and Live again
+				$extraData = [
+					VersionedManyManyList::VersionedStatusFieldName => VersionedManyManyList::StatusPublished,
+				];
+				$this->updateItemExtraData($itemID, $extraData);
+
+			} else {
+				// no copies etc, just on stage so delete it if we were the creator
+				if ($data = $this->findRelationship($itemID, self::StatusStaged)) {
+					if (isset($data[ self::VersionedMemberFieldName ]) && $data[ self::VersionedMemberFieldName ] == \Member::currentUserID()) {
+						$item->delete();
+					}
+				}
+
+				// tidy up the relationship we don't want it anymore
+				parent::removeByID($itemID);
+			}
+		}
+	}
+
+	/**
+	 * Find the first relationship record and return it as an array.
+	 *
+	 * @param \DataObject|int $itemOrID
+	 * @param array|string    $states
+	 * @return array
+	 */
+	public function findRelationship($itemOrID, $states = []) {
+		return $this->existingQuery($itemOrID, $states)->firstRow()->execute()->record();
 	}
 
 	/**

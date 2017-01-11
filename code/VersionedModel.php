@@ -26,7 +26,7 @@ class VersionedModel extends \DataObject {
 	 * @var array
 	 */
 	private static $backprop_events = [
-		'changing' => 'original',           // save original record data to info for event
+		'changing' => 'eventData',           // save original record data to info for event
 		'changed'  => true,                 // enable the event handler (this way can disable in config as can't otherwise remove)
 	];
 
@@ -77,6 +77,18 @@ class VersionedModel extends \DataObject {
 	}
 
 	/**
+	 * Returns an array of original and current record values no matter what the event is.
+	 * @param string $event ignored
+	 * @return array
+	 */
+	public function eventData($event) {
+		return [
+			'original' => $this->original,
+		    'updated' => $this->record
+		];
+	}
+
+	/**
 	 * Notify related models that this model is changing in the database via 'backprop' mechanism.
 	 */
 	public function onBeforeWrite() {
@@ -84,22 +96,28 @@ class VersionedModel extends \DataObject {
 		$this->initBackprop();
 
 		if ($this->isChanged()) {
+			// notify related records this one is changing, this will save the original data
 			$this->backprop('changing');
 		}
-
 	}
 
 	/**
 	 * Notify related models that this model changed in the database via 'backprop' mechanism.
+	 * Tidies up any linked versions or 'LiveCopy' status relationships to Archived status, they become the records versioned history.
 	 */
 	public function onAfterWrite() {
 		parent::onAfterWrite();
-		$this->backprop('changed');
-		// now we need to cleanup any temporary live records created while editing
+
+		// notify related records this one changed if we did a 'changing' notification
+		if ($this->backpropData('changing')) {
+			$this->backprop('changed');
+		}
+
+		// cleanup any temporary live records created while editing by marking them as 'Archived'
 		/** @var VersionedManyManyList $relationship */
 		foreach ($this->relationships(Arities::ManyMany) as $relationship) {
 			if ($relationship instanceof VersionedRelationship) {
-				$relationship->updateLinkedVersions($this);
+				$relationship->updateLinkedVersions($this, VersionedManyManyList::StatusArchived);
 			}
 		}
 
