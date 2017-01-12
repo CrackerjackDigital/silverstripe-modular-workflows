@@ -2,7 +2,6 @@
 namespace Modular\Workflows;
 
 use Modular\Collections\VersionedManyManyList;
-use Modular\Interfaces\Arities;
 use Modular\Interfaces\VersionedRelationship;
 use Modular\reflection;
 use Modular\related;
@@ -69,18 +68,24 @@ class ModelExtension extends \Modular\ModelExtension {
 		return $this->canDoIt(self::ActionEdit, $member);
 	}
 
+	/**
+	 *
+	 */
 	public function onAfterPublish() {
-		foreach ($this->extensionsByInterface(VersionedRelationship::class) as $extensionClassName => $extensionInstance ) {
+		foreach ($this->extensionsByInterface(VersionedRelationship::class) as $extensionClassName => $extensionInstance) {
 			$relationshipName = $extensionClassName::relationship_name();
 			/** @var VersionedManyManyList $list */
 			$list = $this()->$relationshipName();
 
 			// walk through the list looking for models with a status of 'Editing', these should be written to Live and the
 			// relationship extra data updated to a status 'Published'
+			/** @var \Versioned|\DataObject $model */
 			foreach ($list as $model) {
 				if ($extra = $list->getExtraData($relationshipName, $model->ID)) {
 					// check for 'Editing' mode
-					if ($extra[VersionedManyManyList::VersionedStatusFieldName] == VersionedManyManyList::StatusStaged) {
+					if ($extra[ VersionedManyManyList::VersionedStatusFieldName ] == VersionedManyManyList::StatusStaged) {
+						$list->archiveLinkedItems($model, VersionedManyManyList::StatusLiveCopy);
+
 						// publish the item
 						$model->writeToStage('Live');
 
@@ -88,13 +93,13 @@ class ModelExtension extends \Modular\ModelExtension {
 						$list->updateItemExtraData(
 							$model->ID,
 							[
-								VersionedManyManyList::VersionedStatusFieldName => VersionedManyManyList::StatusPublished
+								VersionedManyManyList::VersionedStatusFieldName => VersionedManyManyList::StatusPublished,
 							]
 						);
 					}
 				}
+
 			}
 		}
 	}
-
 }

@@ -3,12 +3,41 @@ namespace Modular\Collections;
 
 use DB;
 use InvalidArgumentException;
-use Modular\backprop;
-use Modular\GridField\GridFieldOrderableRows;
 use Modular\VersionedModel;
-use SQLQuery;
-use SS_Query;
 
+/**
+ * VersionedManyManyList keeps track of many_many relationships internally to the same table (so no _versions table required), and
+ * uses a Status field on the many_many_extraFields (MMEF) to determine what stage the records can be seen on (Stage, Live), coupled to
+ * logic which updates the MMEF when items are added and removed from the list. DataObjects which this list tracks should be instances
+ * of VersionedModel, not DataObject.
+ *
+ * -    When a new record is added to the list it will be written to Stage and added with a MMEF status of 'Staged' and so
+ *      only visible on Stage and in CMS.
+ *
+ * -    When an existing model in the list is 'added' which already has a published version:
+ *
+ *      A copy of the model is created and put on Live with the original values
+ *
+ *      A relationship record with an MMEF status of 'Live' is created, so is only visible on Live
+ *      and a link (id) to the 'Staged' record for tracking and removal later.
+ *
+ * -    When a Page or VersionedModel is published all items in this list are checked (in VersionedModel.onAfterPublish)
+ *
+ *      Records with an MMEF status of 'Live' are removed from Live (updated to MMEF status 'Archived' and removed from Live) and
+ *
+ *      Records with a status of 'Staged' are published to Live and their MMEF status updated to 'Published'.
+ *
+ * -    When a model is removed from the list (.removeByID method) and there is an existing 'Live' record linked to that model:
+ *
+ *      Data from the Live record is copied back to the Staged record
+ *
+ *      The Live record is deleted and the relationship MMEF data updated to 'Published'.
+ *
+ * -    When a model is removed and there is no Live record for the model being removed
+ *      then it is just deleted along with it's relationship record.
+ *
+ * @package Modular\Collections
+ */
 class VersionedManyManyList extends \ManyManyList {
 	const VersionedNumberFieldName = 'VersionedNumber';
 	const VersionedStatusFieldName = 'VersionedStatus';
@@ -46,6 +75,39 @@ class VersionedManyManyList extends \ManyManyList {
 		return static::config()->get('state_stage_map');
 	}
 
+	public static function states_for_stage($stage) {
+		return array_keys(
+			array_filter(
+				self::state_stage_map(),
+				function ($stages) use ($stage) {
+					return in_array($stage, $stages);
+				}
+			)
+		);
+	}
+
+	/**
+	 * @param array|string $states e.g. self::StatusPublished
+	 * @return array
+	 */
+	public static function stages_for_states($states) {
+		$states = is_array($states) ? $states : [$states];
+
+		// filter to the states we're interested
+		$map = array_intersect_key(
+			self::state_stage_map(),
+			array_flip($states)
+		);
+		return array_reduce(
+			$map,
+			function ($prev, $stages) {
+				return array_merge($prev, $stages);
+			},
+			[]
+		);
+
+	}
+
 	/**
 	 * This is used to build the filter criteria for this list, we modify default behaviour so
 	 * if we're in Stage mode then filter out items which don't have a VersionedStatus of 'Current'.
@@ -67,16 +129,9 @@ class VersionedManyManyList extends \ManyManyList {
 				// use provided states for building filter
 				$states = is_array($states) ? $states : [$states];
 			} else {
-				// leave only states in map which have current stage as an option
-				// no stage will come out as 'NoSuchStage' and so fail the filter as expected.
-				$states = array_keys(
-					array_filter(
-						self::state_stage_map(),
-						function ($stages) use ($currentStage) {
-							return in_array($currentStage, $stages);
-						}
-					)
-				);
+				// none provided, leave only states in map which have current stage as an option
+				// no stage will come out as 'Archive' and so fail the filter as expected.
+				$states = $this->states_for_stage($currentStage);
 
 			}
 
@@ -98,8 +153,8 @@ class VersionedManyManyList extends \ManyManyList {
 	 * Does so by adding an entry to the joinTable.
 	 *
 	 * @param \DataObject|\Versioned $item
-	 * @param array       $extraData   A map of additional columns to insert into the joinTable.
-	 *                                 Column names should be ANSI quoted.
+	 * @param array                  $extraData A map of additional columns to insert into the joinTable.
+	 *                                          Column names should be ANSI quoted.
 	 */
 	public function add($item, $extraData = array()) {
 		// deal with VersionedModel records
@@ -145,7 +200,7 @@ class VersionedManyManyList extends \ManyManyList {
 					}
 				}
 				// add should set this but here we go
-				$liveExtraData[$this->localKey] = $live->ID;
+				$liveExtraData[ $this->localKey ] = $live->ID;
 
 				// add a new relationship to the 'live' record with a backlink to the 'real' item which is being edited
 				// this link will be used when the item is published to identify temporary live records and remove them.
@@ -172,50 +227,6 @@ class VersionedManyManyList extends \ManyManyList {
 
 		}
 		parent::add($item, $extraData);
-	}
-
-	/**
-	 * Return a copy of provided item using provided data.
-	 *
-	 * @param \DataObject|\Versioned|VersionedModel $item
-	 * @param bool                                  $writeAndDuplicateRelationships
-	 * @param array                                 $data to initialise copy with
-	 * @param array                                 $excludeFields don't update the copy with these fields
-	 * @return \DataObject|\Modular\backprop|\Versioned
-	 */
-	public function duplicateItem($item, $writeAndDuplicateRelationships = true, $data = [], $excludeFields = ['ID', 'ClassName', 'Created', 'Version']) {
-		// never these
-		unset($data['ID']);
-		unset($data['ClassName']);
-
-		/** @var \DataObject|\Versioned|VersionedModel $copy */
-
-		$copy = $item->duplicate($writeAndDuplicateRelationships);
-
-		// transform to key => null for array_diff_key
-		$excludeFields = array_fill_keys(
-			$excludeFields,
-			null
-		);
-
-		// prepare update with all fields including those which don't exist in the data which
-		// are needed to clear values which weren't set on the original
-		// $data may not contain all the fields if no value was set originaly.
-		$updateWith = array_merge(
-			array_diff_key(
-				array_fill_keys(
-					array_keys($item->toMap()),
-					null
-				),
-				$excludeFields
-			),
-			$data
-		);
-		$copy->update($updateWith);
-		if ($writeAndDuplicateRelationships) {
-			$copy->write();
-		}
-		return $copy;
 	}
 
 	/**
@@ -290,6 +301,50 @@ class VersionedManyManyList extends \ManyManyList {
 	}
 
 	/**
+	 * Return a copy of provided item using provided data.
+	 *
+	 * @param \DataObject|\Versioned|VersionedModel $item
+	 * @param bool                                  $writeAndDuplicateRelationships
+	 * @param array                                 $data          to initialise copy with
+	 * @param array                                 $excludeFields don't update the copy with these fields
+	 * @return \DataObject|\Modular\backprop|\Versioned
+	 */
+	public function duplicateItem($item, $writeAndDuplicateRelationships = true, $data = [], $excludeFields = ['ID', 'ClassName', 'Created', 'Version']) {
+		// never these
+		unset($data['ID']);
+		unset($data['ClassName']);
+
+		/** @var \DataObject|\Versioned|VersionedModel $copy */
+
+		$copy = $item->duplicate($writeAndDuplicateRelationships);
+
+		// transform to key => null for array_diff_key
+		$excludeFields = array_fill_keys(
+			$excludeFields,
+			null
+		);
+
+		// prepare update with all fields including those which don't exist in the data which
+		// are needed to clear values which weren't set on the original
+		// $data may not contain all the fields if no value was set originaly.
+		$updateWith = array_merge(
+			array_diff_key(
+				array_fill_keys(
+					array_keys($item->toMap()),
+					null
+				),
+				$excludeFields
+			),
+			$data
+		);
+		$copy->update($updateWith);
+		if ($writeAndDuplicateRelationships) {
+			$copy->write();
+		}
+		return $copy;
+	}
+
+	/**
 	 * Update any linked versions for the provided item/ID. Generally used to remove an old version of a record from
 	 * the Live site when a new version is being published, e.g. in VersionedModel.onAfterWrite(). This won't unpublish the
 	 * linked version models though.
@@ -325,6 +380,27 @@ class VersionedManyManyList extends \ManyManyList {
 	 */
 	protected function hasExisting($itemOrID, $states) {
 		return $this->existingQuery($itemOrID, $states)->count() > 0;
+	}
+
+	/**
+	 * Remove linked items from the list by updating relationship to 'archived' and removing the model from Live.
+	 *
+	 * @param \DataObject|\Versioned|int $forModel
+	 * @param array|string               $states remove in these states
+	 */
+	public function archiveLinkedItems($forModel, $states = VersionedManyManyList::StatusLiveCopy) {
+		// remove the linked copies from Live by updating to 'Archived' and deleting the model from Live
+		if ($linked = $this->linkedVersions($forModel, $states)->execute()) {
+			foreach ($linked as $rel) {
+				// find the 'live' model
+				if ($live = $forModel::get()->byID($rel[ $this->localKey ])) {
+					// and delete from stage
+					$live->deleteFromStage('Live');
+				}
+			}
+			// now update all the relationships for the model to 'Archived'
+			$this->updateLinkedVersions($forModel->ID, VersionedManyManyList::StatusArchived, VersionedManyManyList::StatusLiveCopy);
+		}
 	}
 
 	/**
@@ -372,7 +448,6 @@ class VersionedManyManyList extends \ManyManyList {
 		}
 		return $query;
 	}
-
 
 	/**
 	 * Return a parameterised filter for selecting by states,

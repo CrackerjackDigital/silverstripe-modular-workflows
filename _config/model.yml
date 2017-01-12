@@ -4,4 +4,7 @@ Name: modular-workflows-model
 Modular\VersionedModel:
   extensions:
     - Versioned('Stage', 'Live')
-# add Modular\Workflows\ModelExtension to Models also
+# add Modular\Workflows\ModelExtension to Page and any Models which are not descended from VersionedModel.
+# Page
+#   extensions:
+#     - Modular\Workflows\ModelExtension

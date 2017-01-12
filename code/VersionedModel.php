@@ -45,35 +45,6 @@ class VersionedModel extends \DataObject {
 	}
 
 	/**
-	 * VersionedModel lists are Modular\Workflows\VersionedDataList's.
-	 *
-	 * @param null   $callerClass
-	 * @param string $filter
-	 * @param string $sort
-	 * @param string $join
-	 * @param null   $limit
-	 * @param string $containerClass
-	 * @return mixed
-	 */
-	public static function get($callerClass = null, $filter = "", $sort = "", $join = "", $limit = null, $containerClass = 'DataList') {
-		return static::custom_get($callerClass, $filter, $sort, $join, $limit, $containerClass);
-	}
-
-	/**
-	 * Inject call to getCustomManyManyComponents so we get a VersionedManyManyList.
-	 *
-	 * @param string $componentName
-	 * @param null   $filter
-	 * @param null   $sort
-	 * @param null   $join
-	 * @param null   $limit
-	 * @return mixed
-	 */
-	public function getManyManyComponents($componentName, $filter = null, $sort = null, $join = null, $limit = null) {
-		return $this->getCustomManyManyComponents($componentName, $filter, $sort, $join, $limit);
-	}
-
-	/**
 	 * Returns an array of original and current record values no matter what the event is.
 	 * @param string $event ignored
 	 * @return array
