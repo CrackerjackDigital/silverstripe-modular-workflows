@@ -23,11 +23,15 @@ class ModelExtension extends \Modular\ModelExtension {
 	const ActionEdit = 'edit';
 	const ActionView = 'view';
 
+	// configure which groups are allowed to view records
+	// TODO move to security model in DB
 	private static $view_groups = [
 		self::AuthorGroup    => true,
 		self::PublisherGroup => true,
 	];
 
+	// configure which groups are allowed to edit records
+	// TODO move to security model in DB
 	private static $edit_groups = [
 		self::AuthorGroup    => true,
 		self::PublisherGroup => false,
@@ -66,17 +70,13 @@ class ModelExtension extends \Modular\ModelExtension {
 	}
 
 	public function onAfterPublish() {
-		// cleanup any temporary live records created while editing by marking them as 'Archived'
-		/** @var VersionedManyManyList $relationship */
-		foreach ($this->relationships(Arities::ManyMany) as $relationship) {
-			if ($relationship instanceof VersionedRelationship) {
-				$relationship->updateLinkedVersions($this(), VersionedManyManyList::StatusArchived);
-			}
-		}
 		foreach ($this->extensionsByInterface(VersionedRelationship::class) as $extensionClassName => $extensionInstance ) {
 			$relationshipName = $extensionClassName::relationship_name();
 			/** @var VersionedManyManyList $list */
 			$list = $this()->$relationshipName();
+
+			// walk through the list looking for models with a status of 'Editing', these should be written to Live and the
+			// relationship extra data updated to a status 'Published'
 			foreach ($list as $model) {
 				if ($extra = $list->getExtraData($relationshipName, $model->ID)) {
 					// check for 'Editing' mode
@@ -97,38 +97,4 @@ class ModelExtension extends \Modular\ModelExtension {
 		}
 	}
 
-	/*
-	 * TODO SLW 2016-12-02 This could be a better way to do it, needs to be tested though, then can remove
-	 * onAfterPublish handlers from extensions like 'HasBlocks' and 'HasTags'
-	 *
-	 * Deep publish owned blocks when the owner is published.
-	 *
-	public function onAfterPublish() {
-		if ($relateds = $this->providePublishableRelatedModels()) {
-			/** @var \DataObject|\Versioned $related *//*
-			foreach ($relateds as $related) {
-				if ($related->hasExtension('Versioned')) {
-					$related->publish('Stage', 'Live');
-					// now ask the block to publish it's own blocks.
-					$related->extend('onAfterPublish');
-				}
-			}
-		}
-	}
-
-	/**
-	 * Call extensions on the model to ask them to return a list of publishable related models,
-	 * e.g. on HasBlocks extension should return a list of blocks related to the model, HasTags a list of tags etc
-	 *
-	 * @return \ArrayList
-	 *
-	protected function providePublishableRelatedModels() {
-		$lists = $this()->extend('related');
-		$related = new \ArrayList();
-		foreach ($lists as $list) {
-			$related->merge($list);
-		}
-		return $related;
-	}
-	*/
 }
