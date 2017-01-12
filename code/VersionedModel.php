@@ -2,9 +2,6 @@
 namespace Modular;
 
 // only this needs importing as other traits are still in 'Modular\' namespace.
-use Modular\Collections\VersionedManyManyList;
-use Modular\Interfaces\Arities;
-use Modular\Interfaces\VersionedRelationship;
 use Modular\Traits\custom_get;
 use Modular\Traits\custom_many_many;
 
@@ -86,6 +83,10 @@ class VersionedModel extends \DataObject {
 			'original' => $this->original,
 		    'updated' => $this->record
 		];
+	}
+
+	public function getDataModel() {
+		return $this->model;
 	}
 
 	/**

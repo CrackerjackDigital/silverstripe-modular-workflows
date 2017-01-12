@@ -114,20 +114,10 @@ class VersionedManyManyList extends \ManyManyList {
 			if (!$hasLinkedVersions && $hasPublished) {
 
 				// get the 'old' values from before updates to the model where applied
-				$savedValues = @$item->backpropData('changing')['original'] ?: [];
+				$originalValues = @$item->backpropData('changing')['original'] ?: [];
 
-				unset($savedValues['ID']);
-				unset($savedValues['ClassName']);
-				// remove unset($savedValues[$this->localKey]);
-
-				// create a copy of the published item and its relationships
-				/** @var \DataObject|\Versioned|backprop $live */
-				$live = $item->duplicate(true);
-
-				$live->update($savedValues);
-
-				// write with old values
-				$live->write();
+				// create a copy of the published item and its relationships initialised with the 'old' values
+				$live = $this->duplicateItem($item, true, $originalValues);
 
 				// put on stage so can find & manipulate easier
 				$live->writeToStage('Stage');
@@ -167,6 +157,9 @@ class VersionedManyManyList extends \ManyManyList {
 				// finished creating live copy
 			}
 
+			// unpublish the item being edited from Live
+			$item->deleteFromStage('Live');
+
 			// add or update existing one to status 'Staged' so we can keep on editing it without impacting the live site,
 			// also update the VersionedMemberID to current member ID.
 			$extraData = array_merge(
@@ -177,11 +170,52 @@ class VersionedManyManyList extends \ManyManyList {
 				$extraData
 			);
 
-			// unpublish the item being edited from Live
-			$item->deleteFromStage('Live');
-
 		}
 		parent::add($item, $extraData);
+	}
+
+	/**
+	 * Return a copy of provided item using provided data.
+	 *
+	 * @param \DataObject|\Versioned|VersionedModel $item
+	 * @param bool                                  $writeAndDuplicateRelationships
+	 * @param array                                 $data to initialise copy with
+	 * @param array                                 $excludeFields don't update the copy with these fields
+	 * @return \DataObject|\Modular\backprop|\Versioned
+	 */
+	public function duplicateItem($item, $writeAndDuplicateRelationships = true, $data = [], $excludeFields = ['ID', 'ClassName', 'Created', 'Version']) {
+		// never these
+		unset($data['ID']);
+		unset($data['ClassName']);
+
+		/** @var \DataObject|\Versioned|VersionedModel $copy */
+
+		$copy = $item->duplicate($writeAndDuplicateRelationships);
+
+		// transform to key => null for array_diff_key
+		$excludeFields = array_fill_keys(
+			$excludeFields,
+			null
+		);
+
+		// prepare update with all fields including those which don't exist in the data which
+		// are needed to clear values which weren't set on the original
+		// $data may not contain all the fields if no value was set originaly.
+		$updateWith = array_merge(
+			array_diff_key(
+				array_fill_keys(
+					array_keys($item->toMap()),
+					null
+				),
+				$excludeFields
+			),
+			$data
+		);
+		$copy->update($updateWith);
+		if ($writeAndDuplicateRelationships) {
+			$copy->write();
+		}
+		return $copy;
 	}
 
 	/**
