@@ -1,10 +1,13 @@
 <?php
 namespace Modular\Workflows;
 
+use DataObject;
 use Modular\Collections\VersionedManyManyList;
-use Modular\Interfaces\VersionedRelationship;
+use Modular\Interfaces\VersionedRelationship as VersionedRelationshipInterface;
+use Modular\Model;
 use Modular\reflection;
 use Modular\related;
+use Versioned;
 
 /**
  * Adds permissions checks and a mechanism to allow all related models of the extended models type to be
@@ -35,6 +38,8 @@ class ModelExtension extends \Modular\ModelExtension {
 		self::AuthorGroup    => true,
 		self::PublisherGroup => false,
 	];
+
+	private static $publish_related = true;
 
 	public function canDoIt($what, $member = null) {
 		$member = $member
@@ -68,38 +73,33 @@ class ModelExtension extends \Modular\ModelExtension {
 		return $this->canDoIt(self::ActionEdit, $member);
 	}
 
+	public function onBeforePublish() {
+
+	}
+
 	/**
-	 *
+	 * After publishing the extended model publish
+	 * archive
 	 */
 	public function onAfterPublish() {
-		foreach ($this->extensionsByInterface(VersionedRelationship::class) as $extensionClassName => $extensionInstance) {
-			$relationshipName = $extensionClassName::relationship_name();
-			/** @var VersionedManyManyList $list */
-			$list = $this()->$relationshipName();
-
-			// walk through the list looking for models with a status of 'Editing', these should be written to Live and the
-			// relationship extra data updated to a status 'Published'
-			/** @var \Versioned|\DataObject $model */
-			foreach ($list as $model) {
-				if ($extra = $list->getExtraData($relationshipName, $model->ID)) {
-					// check for 'Editing' mode
-					if ($extra[ VersionedManyManyList::VersionedStatusFieldName ] == VersionedManyManyList::StatusStaged) {
-						$list->archiveLinkedItems($model, VersionedManyManyList::StatusLiveCopy);
-
-						// publish the item
-						$model->writeToStage('Live');
-
-						// 'publish' the relationship
-						$list->updateItemExtraData(
-							$model->ID,
-							[
-								VersionedManyManyList::VersionedStatusFieldName => VersionedManyManyList::StatusPublished,
-							]
-						);
-					}
+		if (static::publish_related()) {
+			foreach ($this->extensionsByInterface(VersionedRelationshipInterface::class) as $extensionClassName => $extensionInstance) {
+				$relationshipName = $extensionClassName::relationship_name();
+				/** @var VersionedManyManyList $list */
+				$list = $this()->$relationshipName();
+				if ($list instanceof VersionedRelationshipInterface) {
+					$list->publishItems();
 				}
-
 			}
 		}
+	}
+
+	/**
+	 * Should the foreign models for this relationship also be published when the extended model is published.
+	 *
+	 * @return bool
+	 */
+	public static function publish_related() {
+		return static::config()->get('publish_related');
 	}
 }

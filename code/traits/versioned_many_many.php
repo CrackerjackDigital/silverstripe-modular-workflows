@@ -41,6 +41,7 @@ trait versioned_many_many {
 				VersionedManyManyList::VersionedStatusFieldName => "Enum('" . join(',', VersionedManyManyList::states()) . "')",
 				VersionedManyManyList::VersionedLinkFieldName   => 'Int',
 				VersionedManyManyList::VersionedNumberFieldName => 'Int',
+				VersionedManyManyList::VersionedMemberFieldName => 'Int',
 			],
 		];
 	}

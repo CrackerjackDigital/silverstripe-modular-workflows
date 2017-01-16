@@ -3,6 +3,8 @@ namespace Modular\Collections;
 
 use DB;
 use InvalidArgumentException;
+use Modular\Interfaces\VersionedRelationship;
+use Modular\Model;
 use Modular\VersionedModel;
 
 /**
@@ -38,7 +40,7 @@ use Modular\VersionedModel;
  *
  * @package Modular\Collections
  */
-class VersionedManyManyList extends \ManyManyList {
+class VersionedManyManyList extends \ManyManyList implements VersionedRelationship {
 	const VersionedNumberFieldName = 'VersionedNumber';
 	const VersionedStatusFieldName = 'VersionedStatus';
 	const VersionedLinkFieldName   = 'VersionedLinkID';
@@ -59,58 +61,109 @@ class VersionedManyManyList extends \ManyManyList {
 	];
 
 	/**
-	 * Return array of Status values, first one default state.
-	 * Can also be used to build an enum field (see versioned_many_many.versionedExtraFields ).
+	 * Removes the LiveCopy from Stage by deleting it from Stage and flagging the relationship as 'Archived', writes the Staged version to Live and updates
+	 * the relationship to 'Published'.
 	 */
-	public static function states() {
-		return array_keys(static::state_stage_map());
+	public function publishItems() {
+		$oldStage = \Versioned::current_stage();
+		\Versioned::reading_stage('Stage');
+
+		foreach ($this as $model) {
+			if ($this->hasLinkedItem($model, self::StatusLiveCopy)) {
+				// remove linked items
+				$this->archiveLinkedItems($model);
+			}
+			// update existing relationship to 'Published'
+			$this->updateItemExtraData(
+				$model,
+				[
+					self::VersionedStatusFieldName => self::StatusPublished,
+					self::VersionedMemberFieldName => null,
+				]
+			);
+			// write the model stages assigned to the state (e.g. 'Stage', 'Live' )
+			$this->writeToStateStages($model, self::StatusPublished);
+
+			// remove from stages which destination state doesn't have
+			$this->removeFromNonStateStages($model, self::StatusPublished);
+
+		}
+		\Versioned::reading_stage($oldStage);
 	}
 
 	/**
-	 * Returns map of allowed states to the Stages they are allowed to show on.
+	 * Add the model to all stages for a state. Ignores 'internal' states, e.g. 'Archived'.
 	 *
-	 * @return array
+	 * @param Model|\Versioned $model
+	 * @param string|array     $states
 	 */
-	public static function state_stage_map() {
-		return static::config()->get('state_stage_map');
+	public function writeToStateStages($model, $states) {
+		$stages = static::stages_for_states($states);
+		foreach ($stages as $stage) {
+			if (!static::is_internal_stage($stage)) {
+				$model->writeToStage($stage);
+			}
+		}
 	}
 
-	public static function states_for_stage($stage) {
-		return array_keys(
-			array_filter(
-				self::state_stage_map(),
-				function ($stages) use ($stage) {
-					return in_array($stage, $stages);
+	/**
+	 * Remove model from all stages not assigned to any of the provided states. Ignores 'internal' states, e.g. 'Archived'.
+	 *
+	 * @param Model|\Versioned $model
+	 * @param string|array     $states
+	 */
+	public function removeFromNonStateStages($model, $states) {
+		$nonStateStages = array_diff(
+			array_reduce(
+				static::state_stage_map(),
+				function ($previousStages, $stages) {
+					return array_merge($previousStages, $stages);
+				},
+				[]
+			),
+			self::stages_for_states($states)
+		);
+		foreach ($nonStateStages as $stage) {
+			if (!self::is_internal_stage($stage)) {
+				$model->deleteFromStage($stage);
+			}
+		}
+	}
+
+	/**
+	 * Return true if the stage is a 'real' one (e.g. Stage or Live) or false if it's an internal one used only for state tracking (e.g. 'Archive')
+	 *
+	 * @param $stage
+	 * @return bool
+	 */
+	public static function is_internal_stage($stage) {
+		return in_array($stage, [self::StatusArchived]);
+	}
+
+	/**
+	 * Remove linked items from the list by updating relationship to 'archived' and removing the model from Live.
+	 *
+	 * @param \DataObject|\Versioned|int $forModel
+	 * @param array|string               $states remove in these states
+	 */
+	public function archiveLinkedItems($forModel, $states = VersionedManyManyList::StatusLiveCopy) {
+		// remove the linked copies from Live by updating to 'Archived' and deleting the model from Live
+		if ($linked = $this->linkedItems($forModel, $states)->execute()) {
+			foreach ($linked as $rel) {
+				// find the 'live' model
+				if ($live = $forModel::get()->byID($rel[ $this->localKey ])) {
+					// and delete from stage
+					$live->deleteFromStage('Live');
 				}
-			)
-		);
+			}
+			// now update all the relationships for the model to 'Archived'
+			$this->updateLinkedVersions($forModel->ID, VersionedManyManyList::StatusArchived, VersionedManyManyList::StatusLiveCopy);
+		}
 	}
 
 	/**
-	 * @param array|string $states e.g. self::StatusPublished
-	 * @return array
-	 */
-	public static function stages_for_states($states) {
-		$states = is_array($states) ? $states : [$states];
-
-		// filter to the states we're interested
-		$map = array_intersect_key(
-			self::state_stage_map(),
-			array_flip($states)
-		);
-		return array_reduce(
-			$map,
-			function ($prev, $stages) {
-				return array_merge($prev, $stages);
-			},
-			[]
-		);
-
-	}
-
-	/**
-	 * This is used to build the filter criteria for this list, we modify default behaviour so
-	 * if we're in Stage mode then filter out items which don't have a VersionedStatus of 'Current'.
+	 * This is used to build the filter criteria for the list, we modify default behaviour so we filter to Stages for the current state
+	 * (e.g. with a status of Published shows on Stage and Live, a status of LiveCopy will only show on Live).
 	 *
 	 * @param int|null          $id
 	 * @param string|array|null $states check for this status
@@ -152,15 +205,16 @@ class VersionedManyManyList extends \ManyManyList {
 	 *
 	 * Does so by adding an entry to the joinTable.
 	 *
-	 * @param \DataObject|\Versioned $item
-	 * @param array                  $extraData A map of additional columns to insert into the joinTable.
-	 *                                          Column names should be ANSI quoted.
+	 * @param \DataObject|\Versioned|int $itemOrID
+	 * @param array                      $extraData A map of additional columns to insert into the joinTable, such as VersionedStatus
 	 */
-	public function add($item, $extraData = array()) {
+	public function add($itemOrID, $extraData = array()) {
+		$item = ($itemOrID instanceof \DataObject) ? $itemOrID : \DataObject::get($this->dataClass)->byID($itemOrID);
+
 		// deal with VersionedModel records
 		if ($item instanceof VersionedModel) {
 			// check for existing linked versioned with a 'Published' status as if it exists we don't need to create a new one.
-			$hasLinkedVersions = $this->linkedVersions($item, self::StatusPublished)->count();
+			$hasLinkedVersions = $this->linkedItems($item, self::StatusPublished)->count();
 
 			// check for an existing published version, this means we need to spin off a new one with those details if one does exist
 			$hasPublished = $this->hasExisting($item, self::StatusPublished);
@@ -195,10 +249,11 @@ class VersionedManyManyList extends \ManyManyList {
 							$record,
 							$liveExtraData
 						);
-						// unset the ID so add doesn't just update the existing one.
-						unset($liveExtraData['ID']);
 					}
 				}
+				// unset the ID so add doesn't just update the existing one.
+				unset($liveExtraData['ID']);
+
 				// add should set this but here we go
 				$liveExtraData[ $this->localKey ] = $live->ID;
 
@@ -219,14 +274,58 @@ class VersionedManyManyList extends \ManyManyList {
 			// also update the VersionedMemberID to current member ID.
 			$extraData = array_merge(
 				[
-					self::VersionedStatusFieldName => self::DefaultStatus,
+					self::VersionedStatusFieldName => self::StatusStaged,
 					self::VersionedMemberFieldName => \Member::currentUserID(),
 				],
 				$extraData
 			);
 
 		}
+		// add the record to the list, possibly with amended extra data for Staged version.
 		parent::add($item, $extraData);
+	}
+
+	/**
+	 * Creates new relationships with a status of 'Staged'
+	 * @param array $idList
+	 */
+	public function setByIDList($idList) {
+		$has = array();
+
+		// Index current data
+		foreach ($this->column() as $id) {
+			$has[ $id ] = true;
+		}
+
+		// Keep track of items to delete
+		$itemsToDelete = $has;
+
+		// add items in the list
+		// $id is the database ID of the record
+		if ($idList) {
+			foreach ($idList as $id) {
+				unset($itemsToDelete[ $id ]);
+				if ($id) {
+					// add or update relationship to/with a status of 'Staged'
+					$stageExtraData = [
+						self::VersionedStatusFieldName => self::StatusStaged,
+						self::VersionedMemberFieldName => \Member::currentUserID(),
+					];
+
+					$this->add($id, $stageExtraData);
+				}
+			}
+		}
+
+		// Remove any items that haven't been mentioned
+		$this->removeMany(array_keys($itemsToDelete));
+	}
+
+	public function removeMany($ids) {
+		foreach ($ids as $id) {
+			$this->removeByID($id);
+		}
+		return $this;
 	}
 
 	/**
@@ -248,7 +347,7 @@ class VersionedManyManyList extends \ManyManyList {
 		/** @var \DataObject|\Versioned $item */
 		if ($item = \DataObject::get($this->dataClass)->byID($itemID)) {
 			// if we are removing a record which a LiveCopy we need to restore the data from the LiveCopy to the 'Editing' record.
-			$linkedQuery = $this->linkedVersions($itemID, self::StatusLiveCopy);
+			$linkedQuery = $this->linkedItems($itemID, self::StatusLiveCopy);
 
 			// try and get a relationship for the Live Copy of the record
 			if ($linkedRow = $linkedQuery->firstRow()->execute()->record()) {
@@ -357,7 +456,7 @@ class VersionedManyManyList extends \ManyManyList {
 	public function updateLinkedVersions($itemOrID, $toState, $ifInStates = []) {
 		$itemID = ($itemOrID instanceof \DataObject) ? $itemOrID->ID : $itemOrID;
 
-		$linkedVersions = $this->linkedVersions($itemID, $ifInStates);
+		$linkedVersions = $this->linkedItems($itemID, $ifInStates);
 		if ($linkedVersions->count()) {
 			// convert to an update and set state on the selected records.
 			$update = $linkedVersions->toUpdate();
@@ -382,25 +481,8 @@ class VersionedManyManyList extends \ManyManyList {
 		return $this->existingQuery($itemOrID, $states)->count() > 0;
 	}
 
-	/**
-	 * Remove linked items from the list by updating relationship to 'archived' and removing the model from Live.
-	 *
-	 * @param \DataObject|\Versioned|int $forModel
-	 * @param array|string               $states remove in these states
-	 */
-	public function archiveLinkedItems($forModel, $states = VersionedManyManyList::StatusLiveCopy) {
-		// remove the linked copies from Live by updating to 'Archived' and deleting the model from Live
-		if ($linked = $this->linkedVersions($forModel, $states)->execute()) {
-			foreach ($linked as $rel) {
-				// find the 'live' model
-				if ($live = $forModel::get()->byID($rel[ $this->localKey ])) {
-					// and delete from stage
-					$live->deleteFromStage('Live');
-				}
-			}
-			// now update all the relationships for the model to 'Archived'
-			$this->updateLinkedVersions($forModel->ID, VersionedManyManyList::StatusArchived, VersionedManyManyList::StatusLiveCopy);
-		}
+	public function hasLinkedItem($model, $states) {
+		return $this->linkedItems($model, $states)->count();
 	}
 
 	/**
@@ -411,7 +493,7 @@ class VersionedManyManyList extends \ManyManyList {
 	 * @param array|string    $states
 	 * @return \SQLSelect
 	 */
-	public function linkedVersions($itemOrID, $states) {
+	public function linkedItems($itemOrID, $states) {
 		$itemID = ($itemOrID instanceof \DataObject) ? $itemOrID->ID : $itemOrID;
 
 		$query = new \SQLSelect("*", "\"{$this->joinTable}\"");
@@ -476,17 +558,18 @@ class VersionedManyManyList extends \ManyManyList {
 	/**
 	 * Update extra data on a relationship in this list.
 	 *
-	 * @param       $itemID
-	 * @param array $extraData
+	 * @param \DataObject|\Versioned $itemOrID
+	 * @param array                  $extraData to set on the relationship(s)
 	 */
-	public function updateItemExtraData($itemID, array $extraData) {
+	public function updateItemExtraData($itemOrID, array $extraData) {
+		$itemID = ($itemOrID instanceof \DataObject) ? $itemOrID->ID : $itemOrID;
 
 		$query = new \SQLUpdate("\"{$this->joinTable}\"");
 
 		if ($filter = $this->foreignIDWriteFilter($this->getForeignID())) {
 			$query->setWhere($filter);
 		} else {
-			user_error("Can't call ManyManyList::remove() until a foreign ID is set", E_USER_WARNING);
+			user_error("Can't update item extra data as no ID", E_USER_WARNING);
 		}
 
 		$query->addWhere(array("\"{$this->localKey}\"" => $itemID));
@@ -519,4 +602,55 @@ class VersionedManyManyList extends \ManyManyList {
 	public function forForeignID($id) {
 		return parent::forForeignID($id);
 	}
+
+	/**
+	 * Return array of Status values, first one default state.
+	 * Can also be used to build an enum field (see versioned_many_many.versionedExtraFields ).
+	 */
+	public static function states() {
+		return array_keys(static::state_stage_map());
+	}
+
+	/**
+	 * Returns map of allowed states to the Stages they are allowed to show on.
+	 *
+	 * @return array
+	 */
+	public static function state_stage_map() {
+		return static::config()->get('state_stage_map');
+	}
+
+	public static function states_for_stage($stage) {
+		return array_keys(
+			array_filter(
+				self::state_stage_map(),
+				function ($stages) use ($stage) {
+					return in_array($stage, $stages);
+				}
+			)
+		);
+	}
+
+	/**
+	 * @param array|string $states e.g. self::StatusPublished
+	 * @return array
+	 */
+	public static function stages_for_states($states) {
+		$states = is_array($states) ? $states : [$states];
+
+		// filter to the states we're interested
+		$map = array_intersect_key(
+			self::state_stage_map(),
+			array_flip($states)
+		);
+		return array_reduce(
+			$map,
+			function ($prev, $stages) {
+				return array_merge($prev, $stages);
+			},
+			[]
+		);
+
+	}
+
 }

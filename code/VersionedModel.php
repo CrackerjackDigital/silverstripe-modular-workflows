@@ -2,10 +2,11 @@
 namespace Modular;
 
 // only this needs importing as other traits are still in 'Modular\' namespace.
+use Modular\Interfaces\VersionedModel as VersionedModelInterface;
 use Modular\Traits\custom_get;
 use Modular\Traits\custom_many_many;
 
-class VersionedModel extends \DataObject {
+class VersionedModel extends \DataObject implements VersionedModelInterface {
 	use lang;
 	use related;
 	use backprop;
