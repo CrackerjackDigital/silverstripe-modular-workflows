@@ -389,7 +389,10 @@ class VersionedManyManyList extends \ManyManyList implements VersionedRelationsh
 				// no copies etc, just on stage so delete it if we were the creator
 				if ($data = $this->findRelationship($itemID, self::StatusStaged)) {
 					if (isset($data[ self::VersionedMemberFieldName ]) && $data[ self::VersionedMemberFieldName ] == \Member::currentUserID()) {
-						$item->delete();
+						// if it's a versioned model then delete it
+						if ($item instanceof VersionedModel) {
+							$item->delete();
+						}
 					}
 				}
 
