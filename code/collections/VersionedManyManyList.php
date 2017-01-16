@@ -81,7 +81,7 @@ class VersionedManyManyList extends \ManyManyList implements VersionedRelationsh
 				[
 					self::VersionedStatusFieldName => self::StatusPublished,
 					self::VersionedMemberFieldName => null,
-				    self::VersionedNumberFieldName => Application::get_current_page()->Version
+					self::VersionedNumberFieldName => Application::get_current_page()->Version,
 				]
 			);
 			// write the model stages assigned to the state (e.g. 'Stage', 'Live' )
@@ -248,8 +248,7 @@ class VersionedManyManyList extends \ManyManyList implements VersionedRelationsh
 					$item->deleteFromStage('Live');
 
 				} else {
-					// get the current live page so we can add a relationship record to it
-					$live = \DataObject::get($this->parentClass())->byID($this->getForeignID());
+					$live = $item;
 
 				}
 				// setup the relationship for the new 'live' record and backlink to the 'real' record, set member ID on it and the current page version
@@ -257,7 +256,7 @@ class VersionedManyManyList extends \ManyManyList implements VersionedRelationsh
 					self::VersionedStatusFieldName => self::StatusLiveCopy,         // only show copy on live
 					self::VersionedLinkFieldName   => $item->ID,                    // link back to original item
 					self::VersionedMemberFieldName => \Member::currentUserID(),
-					self::VersionedNumberFieldName => Application::get_current_page()->Version
+					self::VersionedNumberFieldName => Application::get_current_page()->Version,
 				];
 
 				// copy data from the existing relationship, e.g. Sort fields etc
@@ -292,7 +291,7 @@ class VersionedManyManyList extends \ManyManyList implements VersionedRelationsh
 				[
 					self::VersionedStatusFieldName => self::StatusStaged,
 					self::VersionedMemberFieldName => \Member::currentUserID(),
-					self::VersionedNumberFieldName => Application::get_current_page()->Version
+					self::VersionedNumberFieldName => Application::get_current_page()->Version,
 				],
 				$extraData
 			);
@@ -304,6 +303,7 @@ class VersionedManyManyList extends \ManyManyList implements VersionedRelationsh
 
 	/**
 	 * Creates new relationships with a status of 'Staged'
+	 *
 	 * @param array $idList
 	 */
 	public function setByIDList($idList) {
@@ -327,7 +327,7 @@ class VersionedManyManyList extends \ManyManyList implements VersionedRelationsh
 					$stageExtraData = [
 						self::VersionedStatusFieldName => self::StatusStaged,
 						self::VersionedMemberFieldName => \Member::currentUserID(),
-					    self::VersionedNumberFieldName => Application::get_current_page()->Version
+						self::VersionedNumberFieldName => Application::get_current_page()->Version,
 					];
 
 					$this->add($id, $stageExtraData);
@@ -400,7 +400,7 @@ class VersionedManyManyList extends \ManyManyList implements VersionedRelationsh
 				// update the relationship to the edited item to 'Published' so is visible on Stage and Live again
 				$extraData = [
 					VersionedManyManyList::VersionedStatusFieldName => VersionedManyManyList::StatusPublished,
-				    VersionedManyManyList::VersionedNumberFieldName => Application::get_current_page()->Version
+					VersionedManyManyList::VersionedNumberFieldName => Application::get_current_page()->Version,
 				];
 				$this->updateItemExtraData($itemID, $extraData);
 
@@ -584,8 +584,8 @@ class VersionedManyManyList extends \ManyManyList implements VersionedRelationsh
 	/**
 	 * Update extra data on a relationship in this list.
 	 *
-	 * @param \DataObject|\Versioned $itemOrID
-	 * @param array                  $extraData to set on the relationship(s)
+	 * @param \DataObject|\Versioned|int $itemOrID
+	 * @param array                      $extraData to set on the relationship(s)
 	 */
 	public function updateItemExtraData($itemOrID, array $extraData) {
 		$itemID = ($itemOrID instanceof \DataObject) ? $itemOrID->ID : $itemOrID;
@@ -624,6 +624,7 @@ class VersionedManyManyList extends \ManyManyList implements VersionedRelationsh
 	 * the given foreign ID.
 	 *
 	 * @param int|array $id An ID or an array of IDs.
+	 * @return \DataList
 	 */
 	public function forForeignID($id) {
 		return parent::forForeignID($id);

@@ -1,13 +1,10 @@
 <?php
 namespace Modular\Workflows;
 
-use DataObject;
 use Modular\Collections\VersionedManyManyList;
 use Modular\Interfaces\VersionedRelationship as VersionedRelationshipInterface;
-use Modular\Model;
 use Modular\reflection;
 use Modular\related;
-use Versioned;
 
 /**
  * Adds permissions checks and a mechanism to allow all related models of the extended models type to be
@@ -78,7 +75,7 @@ class ModelExtension extends \Modular\ModelExtension {
 	}
 
 	/**
-	 * After publishing the extended model publish
+	 * After publishing the extended model publish any versioned relationships too.
 	 * archive
 	 */
 	public function onAfterPublish() {
@@ -94,6 +91,9 @@ class ModelExtension extends \Modular\ModelExtension {
 		}
 	}
 
+	/**
+	 * After rolling back the extended model rollback any versioned relationships too.
+	 */
 	public function onAfterRollback() {
 		if (static::publish_related()) {
 			foreach ($this->extensionsByInterface(VersionedRelationshipInterface::class) as $extensionClassName => $extensionInstance) {
