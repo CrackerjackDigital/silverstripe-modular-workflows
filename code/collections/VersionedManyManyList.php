@@ -3,6 +3,8 @@ namespace Modular\Collections;
 
 use DB;
 use InvalidArgumentException;
+use Modular\Application;
+use Modular\Interfaces\VersionedModel as VersionedModelInterface;
 use Modular\Interfaces\VersionedRelationship;
 use Modular\Model;
 use Modular\VersionedModel;
@@ -79,6 +81,7 @@ class VersionedManyManyList extends \ManyManyList implements VersionedRelationsh
 				[
 					self::VersionedStatusFieldName => self::StatusPublished,
 					self::VersionedMemberFieldName => null,
+				    self::VersionedNumberFieldName => Application::get_current_page()->Version
 				]
 			);
 			// write the model stages assigned to the state (e.g. 'Stage', 'Live' )
@@ -89,6 +92,13 @@ class VersionedManyManyList extends \ManyManyList implements VersionedRelationsh
 
 		}
 		\Versioned::reading_stage($oldStage);
+	}
+
+	/**
+	 * Restore any 'Archived' items to Stage
+	 */
+	public function rollbackItems() {
+		// find all
 	}
 
 	/**
@@ -212,7 +222,7 @@ class VersionedManyManyList extends \ManyManyList implements VersionedRelationsh
 		$item = ($itemOrID instanceof \DataObject) ? $itemOrID : \DataObject::get($this->dataClass)->byID($itemOrID);
 
 		// deal with VersionedModel records
-		if ($item instanceof VersionedModel) {
+		if ($item instanceof VersionedModelInterface) {
 			// check for existing linked versioned with a 'Published' status as if it exists we don't need to create a new one.
 			$hasLinkedVersions = $this->linkedItems($item, self::StatusPublished)->count();
 
@@ -222,23 +232,32 @@ class VersionedManyManyList extends \ManyManyList implements VersionedRelationsh
 			// if no linked version exists but a published version exists we need to create a 'Live' copy.
 			if (!$hasLinkedVersions && $hasPublished) {
 
-				// get the 'old' values from before updates to the model where applied
-				$originalValues = @$item->backpropData('changing')['original'] ?: [];
+				if ($item instanceof VersionedModel) {
+					// get the 'old' values from before updates to the model where applied
+					$originalValues = @$item->backpropData('changing')['original'] ?: [];
 
-				// create a copy of the published item and its relationships initialised with the 'old' values
-				$live = $this->duplicateItem($item, true, $originalValues);
+					// create a copy of the published VersionedModel and its relationships initialised with the 'old' values
+					$live = $this->duplicateItem($item, true, $originalValues);
+					// put on stage so can find & manipulate easier
+					$live->writeToStage('Stage');
 
-				// put on stage so can find & manipulate easier
-				$live->writeToStage('Stage');
+					// put the copy on Live
+					$live->writeToStage('Live');
 
-				// put on Live
-				$live->writeToStage('Live');
+					// unpublish the item being edited from Live
+					$item->deleteFromStage('Live');
 
-				// setup the relationship for the new 'live' record and backlink to the 'real' record, set member ID on it
+				} else {
+					// get the current live page so we can add a relationship record to it
+					$live = \DataObject::get($this->parentClass())->byID($this->getForeignID());
+
+				}
+				// setup the relationship for the new 'live' record and backlink to the 'real' record, set member ID on it and the current page version
 				$liveExtraData = [
 					self::VersionedStatusFieldName => self::StatusLiveCopy,         // only show copy on live
 					self::VersionedLinkFieldName   => $item->ID,                    // link back to original item
 					self::VersionedMemberFieldName => \Member::currentUserID(),
+					self::VersionedNumberFieldName => Application::get_current_page()->Version
 				];
 
 				// copy data from the existing relationship, e.g. Sort fields etc
@@ -267,15 +286,13 @@ class VersionedManyManyList extends \ManyManyList implements VersionedRelationsh
 				// finished creating live copy
 			}
 
-			// unpublish the item being edited from Live
-			$item->deleteFromStage('Live');
-
-			// add or update existing one to status 'Staged' so we can keep on editing it without impacting the live site,
-			// also update the VersionedMemberID to current member ID.
+			// add or update existing relationship to status 'Staged' so we can keep on editing it without impacting the live site,
+			// also update the VersionedMemberID to current member ID and the version to the version of the page being edited.
 			$extraData = array_merge(
 				[
 					self::VersionedStatusFieldName => self::StatusStaged,
 					self::VersionedMemberFieldName => \Member::currentUserID(),
+					self::VersionedNumberFieldName => Application::get_current_page()->Version
 				],
 				$extraData
 			);
@@ -310,6 +327,7 @@ class VersionedManyManyList extends \ManyManyList implements VersionedRelationsh
 					$stageExtraData = [
 						self::VersionedStatusFieldName => self::StatusStaged,
 						self::VersionedMemberFieldName => \Member::currentUserID(),
+					    self::VersionedNumberFieldName => Application::get_current_page()->Version
 					];
 
 					$this->add($id, $stageExtraData);
@@ -382,6 +400,7 @@ class VersionedManyManyList extends \ManyManyList implements VersionedRelationsh
 				// update the relationship to the edited item to 'Published' so is visible on Stage and Live again
 				$extraData = [
 					VersionedManyManyList::VersionedStatusFieldName => VersionedManyManyList::StatusPublished,
+				    VersionedManyManyList::VersionedNumberFieldName => Application::get_current_page()->Version
 				];
 				$this->updateItemExtraData($itemID, $extraData);
 
@@ -535,16 +554,20 @@ class VersionedManyManyList extends \ManyManyList implements VersionedRelationsh
 	}
 
 	/**
-	 * Return a parameterised filter for selecting by states,
+	 * Return a parameterised filter for selecting by states, or empty if no states.
 	 *
 	 * @param $states
 	 * @return array e.g [ "VersionedStatus in (?, ?)" => [ 'LiveCopy', 'Published' ] ]
 	 */
 	protected function statesFilter($states) {
-		$states = is_array($states) ? $states : [$states];
-		return [
-			static::VersionedStatusFieldName . ' in (' . DB::placeholders($states) . ')' => $states,
-		];
+		if ($states = is_array($states) ? $states : [$states]) {
+			$filter = [
+				static::VersionedStatusFieldName . ' in (' . DB::placeholders($states) . ')' => $states,
+			];
+		} else {
+			$filter = [];
+		}
+		return $filter;
 	}
 
 	/**

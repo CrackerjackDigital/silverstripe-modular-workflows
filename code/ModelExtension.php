@@ -94,6 +94,20 @@ class ModelExtension extends \Modular\ModelExtension {
 		}
 	}
 
+	public function onAfterRollback() {
+		if (static::publish_related()) {
+			foreach ($this->extensionsByInterface(VersionedRelationshipInterface::class) as $extensionClassName => $extensionInstance) {
+				$relationshipName = $extensionClassName::relationship_name();
+				/** @var VersionedManyManyList $list */
+				$list = $this()->$relationshipName();
+				if ($list instanceof VersionedRelationshipInterface) {
+					$list->rollbackItems();
+				}
+			}
+
+		}
+	}
+
 	/**
 	 * Should the foreign models for this relationship also be published when the extended model is published.
 	 *
